@@ -6,7 +6,7 @@ In addition to this, we also compared the effect and efficiency of numerous LLC 
 on certain Graph workloads such as Page Rank(PR), Breadth First Search(BFS) and Single-Source-Shortest-Path(SSSP) algorithms.
 
 We have created 3 Champsim folders containing the 3 policies implemented.  and they can be run with any traces.
-
+The result folder contains the excel showing the IPC values of the different runs and traces for these 3 hierarchies.
 
 # Hierarchy effects
 
