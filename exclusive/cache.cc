@@ -2,7 +2,7 @@
 #include "set.h"
 
 uint64_t l2pf_access = 0;
-
+#define LLC_BYPASS
 
 
 uint8_t cache_invalidate_L2(CACHE* L2, uint64_t addr, uint32_t set, uint32_t way, uint32_t fill_cpu, uint64_t instr_id, uint64_t cycle){
@@ -12,24 +12,59 @@ uint8_t cache_invalidate_L2(CACHE* L2, uint64_t addr, uint32_t set, uint32_t way
 
   uint32_t cpu = L2->cpu;
   
-  
+  CACHE* L1I = L2->upper_icache[cpu];
+  CACHE* L1D = L2->upper_dcache[cpu];
+  CACHE* updated;
+  uint32_t dirty_set, dirty_way;
 
-  // getting writeback packet
+  uint8_t l1_hit = 0;
+  
+  // checking if address present in l1d
+  dirty_set = L1D->get_set(addr);
+  dirty_way = L1D->get_way(addr, dirty_set);
+  updated = L1D;
+  if(dirty_way < L1D_WAY) l1_hit = 1;   // L1D hit
+  
+  if(!l1_hit){
+    dirty_set = L1I->get_set(addr);
+    dirty_way = L1I->get_way(addr, dirty_set);
+    updated = L1I;
+    if(dirty_way < L1I_WAY) l1_hit = 1;        // L1I hit
+  }
+  if(!l1_hit){     // L1 miss
+    dirty_set = set;
+    dirty_way = way;
+    updated = L2;
+  }
+
+  uint8_t dirty = 0;  
+  if(l1_hit){
+    if(updated->block[dirty_set][dirty_way].dirty || L2->block[set][way].dirty) dirty = 1;
+  }
+
+  else if (L2->block[set][way].dirty) dirty =1;
+
   wb.fill_level = FILL_LLC;
   wb.cpu = fill_cpu;
-  wb.address = L2->block[set][way].address;
-  wb.full_addr = L2->block[set][way].full_addr;
-  wb.data = L2->block[set][way].data;
+  wb.address = updated->block[dirty_set][dirty_way].address;
+  wb.full_addr = updated->block[dirty_set][dirty_way].full_addr;
+  wb.data = updated->block[dirty_set][dirty_way].data;
   wb.instr_id = instr_id;
   wb.ip = 0; // writeback does not have ip
   wb.type = WRITEBACK;
   wb.event_cycle = cycle;
   
+  
+  
   if (L2->lower_level->get_occupancy(2, L2->block[set][way].address) == L2->lower_level->get_size(2, L2->block[set][way].address)){
     return 0;
   }
   
-  wb.copyback = !L2->block[set][way].dirty;
+  wb.copyback = !dirty;
+  if(l1_hit){
+      updated->block[dirty_set][dirty_way].valid = 0;  // invalidating L1 
+      updated->block[dirty_set][dirty_way].dirty = 0;
+  }
       
   L2->lower_level->add_wq(&wb);
   L2->block[set][way].dirty = 0;
@@ -449,8 +484,9 @@ void CACHE::handle_writeback()
             sim_hit[writeback_cpu][WQ.entry[index].type]++;
             sim_access[writeback_cpu][WQ.entry[index].type]++;
 
-            // mark dirty
-            block[set][way].dirty = 1;
+            // mark dirty only if block was already dirty or the incoming writeback packet is dirty
+            if(block[set][way].dirty || !WQ.entry[index].copyback)block[set][way].dirty = 1;
+            
 
             if (cache_type == IS_ITLB)
                 WQ.entry[index].instruction_pa = block[set][way].data;
@@ -841,10 +877,7 @@ void CACHE::handle_read()
             
             
             // making the entry in LLC invalid
-            if(cache_type == IS_LLC){
-              block[set][way].dirty = 0;
-              block[set][way].valid = 0;
-            }
+            invalidate_entry(WQ.entry[index].address);
 
 
 
