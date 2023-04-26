@@ -28,9 +28,9 @@ algorithms that we analyzed, under the use of LRU (Least Recently Used) LLC repl
 
 | Algorithm | Best Hierarchy | % improvement |
 | :-----: | :-----: | :-----: |
-| PR   | exclusive | 4 |
-| BFS  | exclusive | 0.3 |
-| SSSP | exclusive | 2 |
+| PR   | exclusive | 4-5 |
+| BFS  | exclusive | 0.3-0.4 |
+| SSSP | exclusive | 2-3 |
 
 The exclusive policy is observed to be the better one albeit by a very small amount. The possible reason for this could the fact that memory accesses are random and 
 exclusive policy allows you to accomodate more addresses and hence a handful of addresses which were fetched long ago are retained in exclusive but not in inclusive 
