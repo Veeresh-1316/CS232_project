@@ -38,8 +38,9 @@ and hence their fetching from the cache instead of the RAM improves the exclusiv
 considerably better than other.
 
 # Effect of changing the cache sizes
+Increasing the cache size increases the latency and for such experimental data we referred  (https://www.anandtech.com/show/16446/amd-ryzen-9-5980hs-cezanne-review-ryzen-5000-mobile-tested/3).
+In the course of our experiment, we worked with LLC cache sizes of 1MB, 2MB, 4MB, 8MB, 16MB and L2C cache sizes of 512KB, 1024KB on the bfs-10.trace.gz and shockinlgy, increasing cache sizes for either of the caches impacts negatively or negligibly. This is a consequence of the fact that graphing algorithms access memory very randomly and hence the distance between temporally near memory addresses is very high which these caches are unable to accomodate and hence the miss ratio is very high for both L2C and LLC. Hence decreasing their size improves the IPC since that decreases the latency too so latency comes out as a dominating factor here. Changing the L1 size is not vaible since increasing the size introduces a jump in latency while decreasing the size would decrease the L1 hits which are abundant originally.
 
-In the course of our experiment, we worked with LLC cache sizes of 2MB, 4MB, 8MB, 16MB and L2C cache sizes of 512KB, 1024KB and shockinlgy, increasing cache sizes
-for either of the caches impacts negatively or negligibly. This is a consequence of the fact that graphing algorithms access memory very randomly and hence the distance 
-between temporally near memory addresses is very high which these caches are unable to accomodate and hence the miss ratio is very high for both L2C and LLC. Hence decreasing 
-their size improves the IPC since that decreases the latency too so latency comes out as a dominating factor here.
+The opposite was observed for pr-3.trace.gz where L1 and L2 had huge miss ratio while LLC had a considerable percentage of hits. Consequently here increasing the size of LLC proved to be effective since it allowed temporally farther addresses to be present in the cache increased the proportion of hits.
+
+
