@@ -1,0 +1,340 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include "cache.h"
+
+#define NOFFSETS 46
+int OFFSET[NOFFSETS] = {1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 9, -9, 10, -10, 11, -11, 12, -12, 13, -13, 14, -14, 15, -15, 16, -16, 18, -18, 20, -20, 24, -24, 30, -30, 32, -32, 36, -36, 40, -40};
+#define DEFAULT_OFFSET 1
+#define SCORE_MAX 31
+#define ROUND_MAX 100
+#define RRINDEX 6
+#define RRTAG 12
+#define DELAYQSIZE 15
+#define DELAY 60
+#define TIME_BITS 12
+#define LLC_RATE_MAX 255
+#define GAUGE_MAX 8191
+#define MSHR_THRESHOLD_MAX (L2C_MSHR_SIZE - 4)
+#define MSHR_THRESHOLD_MIN 2
+#define LOW_SCORE 20
+#define BAD_SCORE 10
+#define BANDWIDTH ((knob_low_bandwidth) ? 64 : 16)
+
+#define LOGLINE 6
+
+#define SAMEPAGE(lineaddr1, lineaddr2) ((((lineaddr1) ^ (lineaddr2)) >> 6) == 0)
+
+#define INCREMENT(x, n) \
+    {                   \
+        x++;            \
+        if (x == (n))   \
+            x = 0;      \
+    }
+
+#define TRUNCATE(x, nbits) (((x) & ((1 << (nbits)) - 1)))
+
+typedef long long t_addr;
+
+int prefetch_offset;
+int recent_request[2][1 << RRINDEX];
+int prefetch_bit[L2C_SET][L2C_WAY];
+
+struct offsets_scores
+{
+    int score[NOFFSETS];
+    int max_score;
+    int best_offset;
+    int round;
+    int p;
+} off_sco;
+
+struct delay_queue
+{
+    int lineaddr[DELAYQSIZE];
+    int cycle[DELAYQSIZE];
+    int valid[DELAYQSIZE];
+    int tail;
+    int head;
+} del_que;
+
+struct prefetch_throttle
+{
+    int mshr_threshold;
+    int prefetch_score;
+    int llc_rate;
+    int llc_rate_gauge;
+    int last_cycle;
+} pre_thr;
+
+//
+//  RECENT REQUESTS TABLE (RR)
+//
+
+void rr_init()
+{
+    int i;
+    for (i = 0; i < (1 << RRINDEX); i++)
+    {
+        recent_request[0][i] = 0;
+        recent_request[1][i] = 0;
+    }
+}
+
+int rr_tag(t_addr lineaddr)
+{
+    return TRUNCATE(lineaddr >> RRINDEX, RRTAG);
+}
+
+int rr_index_left(t_addr lineaddr)
+{
+    return TRUNCATE(lineaddr ^ (lineaddr >> RRINDEX), RRINDEX);
+}
+
+int rr_index_right(t_addr lineaddr)
+{
+    return TRUNCATE(lineaddr ^ (lineaddr >> (2 * RRINDEX)), RRINDEX);
+}
+
+void rr_insert_left(t_addr lineaddr)
+{
+    int i = rr_index_left(lineaddr);
+    recent_request[0][i] = rr_tag(lineaddr);
+}
+
+void rr_insert_right(t_addr lineaddr)
+{
+    int i = rr_index_right(lineaddr);
+    recent_request[1][i] = rr_tag(lineaddr);
+}
+
+int rr_hit(t_addr lineaddr)
+{
+    int i = rr_index_left(lineaddr);
+    int j = rr_index_right(lineaddr);
+    int tag = rr_tag(lineaddr);
+    return (recent_request[0][i] == tag) || (recent_request[1][j] == tag);
+}
+
+//
+//  DELAY QUEUE (del_que)
+//
+
+void del_que_init()
+{
+    int i;
+    for (i = 0; i < DELAYQSIZE; i++)
+    {
+        del_que.lineaddr[i] = 0;
+        del_que.cycle[i] = 0;
+        del_que.valid[i] = 0;
+    }
+    del_que.tail = 0;
+    del_que.head = 0;
+}
+
+void del_que_push(t_addr lineaddr)
+{
+    if (del_que.valid[del_que.tail])
+    {
+        rr_insert_left(del_que.lineaddr[del_que.head]);
+        INCREMENT(del_que.head, DELAYQSIZE);
+    }
+    del_que.lineaddr[del_que.tail] = TRUNCATE(lineaddr, RRINDEX + RRTAG);
+    del_que.cycle[del_que.tail] = TRUNCATE(current_core_cycle[0], TIME_BITS);
+    del_que.valid[del_que.tail] = 1;
+    INCREMENT(del_que.tail, DELAYQSIZE);
+}
+
+int del_que_ready()
+{
+    if (!del_que.valid[del_que.head])
+        return 0;
+    int cycle = TRUNCATE(current_core_cycle[0], TIME_BITS);
+    int issuecycle = del_que.cycle[del_que.head];
+    int readycycle = TRUNCATE(issuecycle + DELAY, TIME_BITS);
+    if (readycycle >= issuecycle)
+        return (cycle < issuecycle) || (cycle >= readycycle);
+    else
+        return (cycle < issuecycle) && (cycle >= readycycle);
+}
+
+void del_que_pop()
+{
+    int i;
+    for (i = 0; i < DELAYQSIZE; i++)
+    {
+        if (!del_que_ready())
+            break;
+        rr_insert_left(del_que.lineaddr[del_que.head]);
+        del_que.valid[del_que.head] = 0;
+        INCREMENT(del_que.head, DELAYQSIZE);
+    }
+}
+
+//
+//  PREFETCH THROTTLE (pre_thr)
+//
+
+void pre_thr_init()
+{
+    pre_thr.mshr_threshold = MSHR_THRESHOLD_MAX;
+    pre_thr.prefetch_score = SCORE_MAX;
+    pre_thr.llc_rate = 0;
+    pre_thr.llc_rate_gauge = GAUGE_MAX / 2;
+    pre_thr.last_cycle = 0;
+}
+
+void pre_thr_update_mshr_threshold()
+{
+    if ((pre_thr.prefetch_score > LOW_SCORE) || (pre_thr.llc_rate > (2 * BANDWIDTH)))
+        pre_thr.mshr_threshold = MSHR_THRESHOLD_MAX;
+    else if (pre_thr.llc_rate < BANDWIDTH)
+        pre_thr.mshr_threshold = MSHR_THRESHOLD_MIN;
+    else
+        pre_thr.mshr_threshold = MSHR_THRESHOLD_MIN + (MSHR_THRESHOLD_MAX - MSHR_THRESHOLD_MIN) * (double)(pre_thr.llc_rate - BANDWIDTH) / BANDWIDTH;
+}
+
+void pre_thr_llc_access()
+{
+    int cycle = TRUNCATE(current_core_cycle[0], TIME_BITS);
+    int dt = TRUNCATE(cycle - pre_thr.last_cycle, TIME_BITS);
+    pre_thr.last_cycle = cycle;
+    pre_thr.llc_rate_gauge += dt - pre_thr.llc_rate;
+
+    if (pre_thr.llc_rate_gauge > GAUGE_MAX)
+    {
+        pre_thr.llc_rate_gauge = GAUGE_MAX;
+        if (pre_thr.llc_rate < LLC_RATE_MAX)
+        {
+            pre_thr.llc_rate++;
+            pre_thr_update_mshr_threshold();
+        }
+    }
+    else if (pre_thr.llc_rate_gauge < 0)
+    {
+        pre_thr.llc_rate_gauge = 0;
+        if (pre_thr.llc_rate > 0)
+        {
+            pre_thr.llc_rate--;
+            pre_thr_update_mshr_threshold();
+        }
+    }
+}
+
+//
+// OFFSETS SCORES (off_sco)
+//
+
+void off_sco_reset()
+{
+    int i;
+    for (i = 0; i < NOFFSETS; i++)  off_sco.score[i] = 0;
+    off_sco.max_score = 0;
+    off_sco.best_offset = 0;
+    off_sco.round = 0;
+    off_sco.p = 0;
+}
+
+void off_sco_learn_best_offset(t_addr lineaddr)
+{
+    int testoffset = OFFSET[off_sco.p];
+    t_addr testlineaddr = lineaddr - testoffset;
+
+    if (SAMEPAGE(lineaddr, testlineaddr) && rr_hit(testlineaddr))
+    {
+        off_sco.score[off_sco.p]++;
+        if (off_sco.score[off_sco.p] >= off_sco.max_score)
+        {
+            off_sco.max_score = off_sco.score[off_sco.p];
+            off_sco.best_offset = testoffset;
+        }
+    }
+
+    if (off_sco.p == (NOFFSETS - 1))
+    {
+        off_sco.round++;
+        if ((off_sco.max_score == SCORE_MAX) || (off_sco.round == ROUND_MAX))
+        {
+            prefetch_offset = (off_sco.best_offset != 0) ? off_sco.best_offset : DEFAULT_OFFSET;
+            pre_thr.prefetch_score = off_sco.max_score;
+            pre_thr_update_mshr_threshold();
+            if (off_sco.max_score <= BAD_SCORE)
+                prefetch_offset = 0;
+            off_sco_reset();
+            return;
+        }
+    }
+    INCREMENT(off_sco.p, NOFFSETS);
+}
+
+int CACHE::issue_prefetch(t_addr lineaddr, int offset, uint32_t metadata_in)
+{
+    if (offset == 0) {
+        del_que_push(lineaddr);
+        return 0; 
+    }
+    if (! SAMEPAGE(lineaddr,lineaddr+offset))
+        return 0;
+    if (MSHR.occupancy < pre_thr.mshr_threshold) {
+        del_que_push(lineaddr);
+        return prefetch_line(0,lineaddr<<LOGLINE,(lineaddr+offset)<<LOGLINE,FILL_L2, metadata_in);
+    }
+    if (pre_thr.prefetch_score > LOW_SCORE)
+        return prefetch_line(0,lineaddr<<LOGLINE,(lineaddr+offset)<<LOGLINE,FILL_LLC, metadata_in);
+    return 0;
+}
+
+void CACHE::l2c_prefetcher_initialize()
+{
+    prefetch_offset = DEFAULT_OFFSET;
+    rr_init();
+    off_sco_reset();
+    del_que_init();
+    pre_thr_init();
+    int i, j;
+    for (i = 0; i < L2C_SET; i++)
+        for (j = 0; j < L2C_WAY; j++)
+            prefetch_bit[i][j] = 0;
+}
+
+uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
+{
+    t_addr lineaddr = addr >> LOGLINE;
+    int s = get_set(addr);
+    int w = get_way(addr, s);
+    int l2_hit = (w >= 0);
+    int prefetched = 0;
+
+    if (l2_hit){
+        prefetched = prefetch_bit[s][w];
+        prefetch_bit[s][w] = 0;
+    }
+    else
+        pre_thr_llc_access();
+
+    del_que_pop();
+    int prefetch_issued = 0;
+    off_sco_learn_best_offset(lineaddr);
+    prefetch_issued = issue_prefetch(lineaddr,prefetch_offset, metadata_in);
+    if (prefetch_issued)
+        pre_thr_llc_access();
+    return metadata_in;
+}
+
+uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+    t_addr lineaddr = addr >> LOGLINE;
+    int s = get_set(addr);
+    int w = get_way(addr, s);
+    prefetch_bit[s][w] = prefetch;
+    t_addr baselineaddr;
+    if (prefetch || (prefetch_offset == 0))
+    {
+        baselineaddr = lineaddr - prefetch_offset;
+        if (SAMEPAGE(lineaddr, baselineaddr))
+            rr_insert_right(baselineaddr);
+    }
+    return metadata_in;
+}
+
+void CACHE::l2c_prefetcher_final_stats() {}
