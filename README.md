@@ -5,9 +5,11 @@ conclusions regarding how they affect a running program.
 In addition to this, we also compared the effect and efficiency of numerous LLC cache replacement policies like LRU, LFU, DRRIP, and SHIP, and analysed their impact
 on certain Graph workloads such as Page Rank(PR), Breadth First Search(BFS) and Single-Source-Shortest-Path(SSSP) algorithms.
 
-We have created 3 Champsim folders containing the 3 policies implemented, and they can be run with any traces.
-There's a master folder call Champsim that has all the requird files: just replace the champsim folder inside this master folder with the
-The commands to obtain the results for a particular trace
+We have created 3 Champsim folders containing the 3 policies implemented inside the master Champsim folder, and they can be run with any traces as suited. <br>
+Inside the master Champsim folder, you can choose the folder corresponding to the cache hierarchy which you want to implement, and run the following commands: <br>
+  ./build_champsim.sh bimodal no no no no <replacement_policy_of_your_choice> 1 <br>
+  ./run_champsim.sh bimodal-no-no-no-no-<replacement_policy>-1core <warmup_instructions_M> <simulation_instructions_M> <trace_file> <br>
+  
 The result folder contains the excel showing the IPC values of the different runs and traces for these 3 hierarchies.
 
 # Hierarchy effects
@@ -47,5 +49,12 @@ The opposite was observed for pr-3.trace.gz where L1 and L2 had huge miss ratio 
 
 # Cache Replacement Policies
 Even though we have used SHIP, DRRIP, LFU and LRU policies for the analysis, and no concrete decision could be found for a clear winner. Nevertheless, SHIP replacement policy does show marginally better results as opposed to the others, and thus is more reliable among them. Whereas, LFU fails to hold a decent performance in the PageRank algorithm analysis.
+
+# Cache Associativity Effects
+In our analysis experiment, we also changed the associativity of a few caches and analyzed the effect on the performances.
+Based on the results obtained, we can conclude that for our traces, there was negligible effect on performance with change in associativity.
+For bfs trace, L1D associativity was changed as it had the highest hit rate, and effects were observed to be negligible.
+For pr trace, LLC associativity was changed as it had the highest hit rate, and effects were observed to be negligible.
+
 
 
