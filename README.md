@@ -5,7 +5,9 @@ conclusions regarding how they affect a running program.
 In addition to this, we also compared the effect and efficiency of numerous LLC cache replacement policies like LRU, LFU, DRRIP, and SHIP, and analysed their impact
 on certain Graph workloads such as Page Rank(PR), Breadth First Search(BFS) and Single-Source-Shortest-Path(SSSP) algorithms.
 
-We have created 3 Champsim folders containing the 3 policies implemented.  and they can be run with any traces.
+We have created 3 Champsim folders containing the 3 policies implemented, and they can be run with any traces.
+There's a master folder call Champsim that has all the requird files: just replace the champsim folder inside this master folder with the
+The commands to obtain the results for a particular trace
 The result folder contains the excel showing the IPC values of the different runs and traces for these 3 hierarchies.
 
 # Hierarchy effects
@@ -42,5 +44,8 @@ Increasing the cache size increases the latency and for such experimental data w
 In the course of our experiment, we worked with LLC cache sizes of 1MB, 2MB, 4MB, 8MB, 16MB and L2C cache sizes of 512KB, 1024KB on the bfs-10.trace.gz and shockinlgy, increasing cache sizes for either of the caches impacts negatively or negligibly. This is a consequence of the fact that graphing algorithms access memory very randomly and hence the distance between temporally near memory addresses is very high which these caches are unable to accomodate and hence the miss ratio is very high for both L2C and LLC. Hence decreasing their size improves the IPC since that decreases the latency too so latency comes out as a dominating factor here. Changing the L1 size is not vaible since increasing the size introduces a jump in latency while decreasing the size would decrease the L1 hits which are abundant originally.
 
 The opposite was observed for pr-3.trace.gz where L1 and L2 had huge miss ratio while LLC had a considerable percentage of hits. Consequently here increasing the size of LLC proved to be effective since it allowed temporally farther addresses to be present in the cache increased the proportion of hits.
+
+# Cache Replacement Policies
+Even though we have used SHIP, DRRIP, LFU and LRU policies for the analysis, and no concrete decision could be found for a clear winner. Nevertheless, SHIP replacement policy does show marginally better results as opposed to the others, and thus is more reliable among them. Whereas, LFU fails to hold a decent performance in the PageRank algorithm analysis.
 
 
